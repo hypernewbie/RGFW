@@ -11914,7 +11914,8 @@ void RGFW_window_blitSurface(RGFW_window* win, RGFW_surface* surface) {
 void* RGFW_window_getView_OSX(RGFW_window* win) { return win->src.view; }
 
 void RGFW_window_setLayer_OSX(RGFW_window* win, void* layer) {
-	objc_msgSend_void_id((id)win->src.view, sel_registerName("setLayer"), (id)layer);
+    // [UAA] Fixed typo: selector must be "setLayer:" (with colon) not "setLayer" - the colon indicates the method takes an argument
+	objc_msgSend_void_id((id)win->src.view, sel_registerName("setLayer:"), (id)layer);
 }
 
 void* RGFW_getLayer_OSX(void) {
@@ -12048,9 +12049,19 @@ i32 RGFW_initPlatform(void) {
 	((void (*)(id, SEL, NSUInteger))objc_msgSend)
 		((id)_RGFW->NSApp, sel_registerName("setActivationPolicy:"), NSApplicationActivationPolicyRegular);
 
-	_RGFW->customViewClasses[0] = objc_allocateClassPair(objc_getClass("NSView"), "RGFWCustomView", 0);
-	_RGFW->customViewClasses[1] = objc_allocateClassPair(objc_getClass("NSOpenGLView"), "RGFWOpenGLCustomView", 0);
+	// [UAA] Check/Alloc View Class
+	Class existingView = objc_getClass("RGFWCustomView"); // [UAA]
+	if (existingView) _RGFW->customViewClasses[0] = (void*)existingView; // [UAA]
+	else _RGFW->customViewClasses[0] = objc_allocateClassPair(objc_getClass("NSView"), "RGFWCustomView", 0); // [UAA]
+
+	// [UAA] Check/Alloc OpenGL View Class
+	Class existingGL = objc_getClass("RGFWOpenGLCustomView"); // [UAA]
+	if (existingGL) _RGFW->customViewClasses[1] = (void*)existingGL; // [UAA]
+	else _RGFW->customViewClasses[1] = objc_allocateClassPair(objc_getClass("NSOpenGLView"), "RGFWOpenGLCustomView", 0); // [UAA]
+
 	for (size_t i = 0; i < 2; i++) {
+		// [UAA] Skip init if existing
+		if ((i == 0 && existingView) || (i == 1 && existingGL)) continue; // [UAA]
 		class_addIvar((Class)_RGFW->customViewClasses[i], "RGFW_window", sizeof(RGFW_window*), sizeof(RGFW_window*), "L");
 		class_addMethod((Class)_RGFW->customViewClasses[i], sel_registerName("drawRect:"), (IMP)RGFW__osxDrawRect, "v@:{CGRect=ffff}");
 		class_addMethod((Class)_RGFW->customViewClasses[i], sel_registerName("viewDidChangeBackingProperties"), (IMP)RGFW__osxViewDidChangeBackingProperties, "v@:");
@@ -12076,6 +12087,13 @@ i32 RGFW_initPlatform(void) {
 		class_addMethod((Class)_RGFW->customViewClasses[i], sel_registerName("updateLayer"), (IMP)RGFW__osxUpdateLayer, "v@:");
 		objc_registerClassPair((Class)_RGFW->customViewClasses[i]);
 	}
+	// [UAA] Check/Alloc Delegate
+	Class existingDelegate = objc_getClass("RGFWWindowDelegate"); // [UAA]
+	if (existingDelegate) { // [UAA]
+		_RGFW->customWindowDelegateClass = (void*)existingDelegate; // [UAA]
+		goto skip_delegate_init; // [UAA]
+	} // [UAA]
+
 	_RGFW->customWindowDelegateClass = objc_allocateClassPair(objc_getClass("NSObject"), "RGFWWindowDelegate", 0);
 	class_addIvar((Class)_RGFW->customWindowDelegateClass, "RGFW_window", sizeof(RGFW_window*), sizeof(RGFW_window*), "L");
 	class_addMethod((Class)_RGFW->customWindowDelegateClass, sel_registerName("windowDidResize:"), (IMP)RGFW__osxDidWindowResize, "v@:@");
@@ -12091,6 +12109,8 @@ i32 RGFW_initPlatform(void) {
 	class_addMethod((Class)_RGFW->customWindowDelegateClass, sel_registerName("prepareForDragOperation:"), (IMP)RGFW__osxPrepareForDragOperation, "B@:@");
 	class_addMethod((Class)_RGFW->customWindowDelegateClass, sel_registerName("performDragOperation:"), (IMP)RGFW__osxPerformDragOperation, "B@:@");
 	objc_registerClassPair((Class)_RGFW->customWindowDelegateClass);
+
+	skip_delegate_init:; // [UAA]
 	return 0;
 }
 
@@ -12977,11 +12997,11 @@ void RGFW_window_swapInterval_OpenGL(RGFW_window* win, i32 swapInterval) {
 }
 #endif
 
-void RGFW_deinitPlatform(void) { }
-
 void RGFW_window_closePlatform(RGFW_window* win) {
 	NSRelease(win->src.view);
 }
+
+void RGFW_deinitPlatform(void) { }
 
 #ifdef RGFW_VULKAN
 VkResult RGFW_window_createSurface_Vulkan(RGFW_window* win, VkInstance instance, VkSurfaceKHR* surface) {
