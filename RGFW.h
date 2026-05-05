@@ -6041,17 +6041,24 @@ void RGFW_XHandleEvent(void) {
 	static i32 format = 0;
 
 	XEvent reply = { ClientMessage };
-	XEvent E;
+	// [UAA] zero-init E and move the E.type check to AFTER XNextEvent. The
+	// upstream code reads E.type before XNextEvent populates E, which is UB.
+	// clang -O3 exploits the UB and deletes the function epilogue, causing
+	// RGFW_XHandleEvent to fall through into the next function in the binary
+	// (RGFW_window_closePtr) and segfault on a bogus `win` pointer.
+	XEvent E = {0};
 
 	static double deltaX = 0.0f;
 	static double deltaY = 0.0f;
 
+	XNextEvent(_RGFW->display, &E);
+
+	// [UAA] Originally placed before XNextEvent; see comment on `XEvent E` above.
 	if (E.type != GenericEvent) {
 		deltaX = 0.0f;
 		deltaY = 0.0f;
 	}
 
-	XNextEvent(_RGFW->display, &E);
 	switch (E.type) {
 		case SelectionRequest:
 			RGFW_XHandleClipboardSelection(&E);
