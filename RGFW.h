@@ -12801,7 +12801,18 @@ RGFW_monitor RGFW_getPrimaryMonitor(void) {
 }
 
 RGFW_monitor RGFW_window_getMonitor(RGFW_window* win) {
-	id screen = objc_msgSend_id(win->src.window, sel_registerName("screen"));
+	// [UAA] During [NSWindow setContentView:], AppKit fires viewDidChangeBackingProperties on the new
+	// [UAA] content view, which calls back into RGFW before the window has been ordered front. At that
+	// [UAA] point [window screen] is nil and CGDisplayCopyDisplayMode/RGFW_getNSScreenForDisplayID
+	// [UAA] both fall over inside RGFW_NSCreateMonitor. Return a zeroed monitor — the caller is the
+	// [UAA] backing-properties callback and only consumes scaleX/scaleY, which we leave at 0 so it
+	// [UAA] becomes a no-op until the window is fully attached and the next event delivers real values.
+	id screen = objc_msgSend_id(win->src.window, sel_registerName("screen")); // [UAA]
+	if (screen == NULL) { // [UAA]
+		RGFW_monitor zero; // [UAA]
+		RGFW_MEMSET(&zero, 0, sizeof(zero)); // [UAA]
+		return zero; // [UAA]
+	} // [UAA]
 	id description = objc_msgSend_id(screen, sel_registerName("deviceDescription"));
 	id screenNumberKey = NSString_stringWithUTF8String("NSScreenNumber");
 	id screenNumber = objc_msgSend_id_id(description, sel_registerName("objectForKey:"), screenNumberKey);
