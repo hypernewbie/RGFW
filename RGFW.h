@@ -11923,6 +11923,9 @@ void* RGFW_window_getView_OSX(RGFW_window* win) { return win->src.view; }
 void RGFW_window_setLayer_OSX(RGFW_window* win, void* layer) {
     // [UAA] Fixed typo: selector must be "setLayer:" (with colon) not "setLayer" - the colon indicates the method takes an argument
 	objc_msgSend_void_id((id)win->src.view, sel_registerName("setLayer:"), (id)layer);
+	// [UAA] MoltenVK derives currentExtent from layer bounds*contentsScale, so size the layer to win->w/h.
+	CGRect frame = CGRectMake(0, 0, (double)win->w, (double)win->h); // [UAA]
+	((void(*)(id, SEL, CGRect))objc_msgSend)((id)layer, sel_registerName("setFrame:"), frame); // [UAA]
 }
 
 void* RGFW_getLayer_OSX(void) {
@@ -12349,6 +12352,13 @@ void RGFW_window_resize(RGFW_window* win, i32 w, i32 h) {
 	((void(*)(id, SEL, CGRect))objc_msgSend)((id)win->src.view, sel_registerName("setFrame:"),  (NSRect){{0, 0}, {(double)win->w, (double)win->h}});
 	((void(*)(id, SEL, NSRect, bool, bool))objc_msgSend)
 		((id)win->src.window, sel_registerName("setFrame:display:animate:"), (NSRect){{(double)win->x, (double)win->y}, {(double)win->w, (double)win->h + (double)offset}}, true, true);
+
+	// [UAA] Keep view's layer frame in sync with win->w/h so MoltenVK's currentExtent updates.
+	id viewLayer = objc_msgSend_id((id)win->src.view, sel_registerName("layer")); // [UAA]
+	if (viewLayer) { // [UAA]
+		CGRect lf = CGRectMake(0, 0, (double)win->w, (double)win->h); // [UAA]
+		((void(*)(id, SEL, CGRect))objc_msgSend)(viewLayer, sel_registerName("setFrame:"), lf); // [UAA]
+	}
 }
 
 void RGFW_window_focus(RGFW_window* win) {
