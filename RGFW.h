@@ -14427,6 +14427,10 @@ void* RGFW_window_getView_OSX(RGFW_window* win) { return win->src.view; }
 
 void RGFW_window_setLayer_OSX(RGFW_window* win, void* layer) {
 	objc_msgSend_void_id((id)win->src.view, sel_registerName("setLayer:"), (id)layer);
+	// [UAA] MoltenVK derives currentExtent from the bounds of the layer that
+	// is attached to the view, so the layer has to be sized to the window.
+	CGRect frame = CGRectMake(0, 0, (double)win->w, (double)win->h); // [UAA]
+	((void(*)(id, SEL, CGRect))objc_msgSend)((id)layer, sel_registerName("setFrame:"), frame); // [UAA]
 }
 
 void* RGFW_getLayer_OSX(void) {
