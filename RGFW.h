@@ -14904,7 +14904,14 @@ void RGFW_window_resizePlatform(RGFW_window* win, i32 w, i32 h) {
     content.size = (CGSize){(CGFloat)w, (CGFloat)h};
 	frame = ((NSRect(*)(id, SEL, NSRect))abi_objc_msgSend_stret)((id)win->src.window, sel_registerName("frameRectForContentRect:"), content);
 
-	((void(*)(id, SEL, CGRect))objc_msgSend)((id)win->src.view, sel_registerName("setFrame:"),frame);
+	// [UAA] - START - resize the NSWindow, not just the view
+	// Upstream computes the new window frame but never applies it, so the
+	// window keeps its old size and win->w/win->h are refetched from the
+	// stale content rect. The view gets the content rect, which is what
+	// the layer (and so MoltenVK's currentExtent) has to follow.
+	((void(*)(id, SEL, NSRect, bool, bool))objc_msgSend)((id)win->src.window, sel_registerName("setFrame:display:animate:"), frame, true, true);
+	((void(*)(id, SEL, CGRect))objc_msgSend)((id)win->src.view, sel_registerName("setFrame:"), (NSRect){{0, 0}, {(double)w, (double)h}});
+	// [UAA] - END
 	RGFW_cocoaFetchRect(win);
 }
 
