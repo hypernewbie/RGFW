@@ -2882,7 +2882,7 @@ RGFWDEF i32 RGFW_window_createSwapChain_DirectX(RGFW_window* win, IDXGIFactory* 
 
 /**!
  * @brief Sets the root (main) RGFW window.
- * @param win A pointer to the RGFW_window to set as the root window.
+ * @param win A live window in the current context, or NULL when it has no windows. [UAA]
 */
 RGFWDEF void RGFW_setRootWindow(RGFW_window* win);
 
@@ -4237,7 +4237,11 @@ void RGFW_deinit_ptr(RGFW_info* info) {
 RGFW_window* RGFW_createWindow(const char* name, i32 x, i32 y, i32 w, i32 h, RGFW_windowFlags flags) {
 	RGFW_window* win = (RGFW_window*)RGFW_ALLOC(sizeof(RGFW_window));
 	RGFW_ASSERT(win != NULL);
-    return RGFW_createWindowPtr(name, x, y, w, h, flags, win);
+	// [UAA] - START - free the wrapper's allocation on creation failure
+	RGFW_window* ret = RGFW_createWindowPtr(name, x, y, w, h, flags, win);
+	if (ret == NULL) RGFW_FREE(win);
+	return ret;
+	// [UAA] - END
 }
 
 void RGFW_window_close(RGFW_window* win) {
@@ -4245,6 +4249,23 @@ void RGFW_window_close(RGFW_window* win) {
 	RGFW_window_closePtr(win);
 	RGFW_FREE(win);
 }
+
+// [UAA] - START - unlink any live window and maintain the list tail
+RGFWDEF void RGFW_unlinkWindow(RGFW_window* win);
+void RGFW_unlinkWindow(RGFW_window* win) {
+	RGFW_window* prev = NULL;
+	RGFW_window* cur = _RGFW->root;
+	while (cur && cur != win) {
+		prev = cur;
+		cur = cur->next;
+	}
+	if (cur == NULL) return;
+	if (prev) prev->next = cur->next;
+	else _RGFW->root = cur->next;
+	if (_RGFW->cur == cur) _RGFW->cur = prev;
+	cur->next = NULL;
+}
+// [UAA] - END
 
 RGFW_window* RGFW_createWindowPtr(const char* name, i32 x, i32 y, i32 w, i32 h, RGFW_windowFlags flags, RGFW_window* win) {
 	RGFW_ASSERT(_RGFW && "An RGFW context must be initialized using RGFW_init and/or set with RGFW_setInfo");
@@ -4267,13 +4288,11 @@ RGFW_window* RGFW_createWindowPtr(const char* name, i32 x, i32 y, i32 w, i32 h, 
 	RGFW_MEMZERO(win, sizeof(RGFW_window));
 	_RGFW->windowCount++;
 
-	/* rect based the requested flags */
-	if (_RGFW->root == NULL) {
-		RGFW_setRootWindow(win);
-		_RGFW->cur = _RGFW->root;
-	} else {
-		_RGFW->cur->next = win;
-	}
+	// [UAA] - START - append the window and advance the tail
+	if (_RGFW->root == NULL) _RGFW->root = win;
+	else _RGFW->cur->next = win;
+	_RGFW->cur = win;
+	// [UAA] - END
 
 	/* set and init the new window's data */
 	win->x = x;
@@ -4289,6 +4308,10 @@ RGFW_window* RGFW_createWindowPtr(const char* name, i32 x, i32 y, i32 w, i32 h, 
 
 	RGFW_window* ret = RGFW_createWindowPlatform(name, flags, win);
 	if (ret == NULL) {
+		// [UAA] - START - undo the list and count changes on failure
+		RGFW_unlinkWindow(win);
+		_RGFW->windowCount--;
+		// [UAA] - END
 		RGFW_debugCallback(RGFW_typeError, RGFW_errPlatform, "failed to create a window");
 		return NULL;
 	}
@@ -4386,14 +4409,7 @@ void RGFW_window_closePtr(RGFW_window* win) {
 
 	RGFW_window_closePlatform(win);
 
-	if (_RGFW->root == win) {
-		_RGFW->root = win->next;
-		if (_RGFW->cur == win) _RGFW->cur = NULL;
-	} else if (_RGFW->cur == win) {
-		RGFW_window* cur;
-		for (cur = _RGFW->root; cur->next && cur->next != win; cur = cur->next);
-		_RGFW->cur = cur;
-	}
+	RGFW_unlinkWindow(win); // [UAA]
 
 	if (_RGFW->clipboard != NULL)
 		RGFW_FREE(_RGFW->clipboard);
@@ -4587,7 +4603,21 @@ RGFW_event* RGFW_window_eventQueuePop(RGFW_window* win) {
 	return ev;
 }
 
-void RGFW_setRootWindow(RGFW_window* win) { _RGFW->root = win; }
+// [UAA] - START - promote a live window without losing the rest of the list
+void RGFW_setRootWindow(RGFW_window* win) {
+	if (win == _RGFW->root) return;
+	RGFW_window* prev = _RGFW->root;
+	while (prev && prev->next != win) prev = prev->next;
+	if (win == NULL || prev == NULL) {
+		RGFW_debugCallback(RGFW_typeError, RGFW_errPlatform, "root window must belong to the current context");
+		return;
+	}
+	prev->next = win->next;
+	if (_RGFW->cur == win) _RGFW->cur = prev;
+	win->next = _RGFW->root;
+	_RGFW->root = win;
+}
+// [UAA] - END
 RGFW_window* RGFW_getRootWindow(void) { return _RGFW->root; }
 
 void RGFW_window_setFlagsInternal(RGFW_window* win, RGFW_windowFlags flags, RGFW_windowFlags cmpFlags) {
@@ -5595,7 +5625,7 @@ RGFW_window* RGFW_getCurrentWindow_OpenGL(void) {
 	void* ctx = RGFW_getCurrentContext_OpenGL();
 	void* surf = RGFW_getCurrentSurface_OpenGL();
 
-	for (RGFW_window* win = _RGFW->root; win->next; win = win->next) {
+	for (RGFW_window* win = _RGFW->root; win; win = win->next) { // [UAA]
 		RGFW_glContext* winGlCtx = RGFW_window_getContext_OpenGL(win);
 		if (winGlCtx == NULL) continue;
 
@@ -6161,7 +6191,7 @@ RGFW_window* RGFW_getCurrentWindow_EGL(void) {
 	void* ctx = RGFW_getCurrentContext_EGL();
 	void* surf = RGFW_getCurrentSurface_EGL();
 
-	for (RGFW_window* win = _RGFW->root; win->next; win = win->next) {
+	for (RGFW_window* win = _RGFW->root; win; win = win->next) { // [UAA]
 		RGFW_eglContext* winGlCtx = RGFW_window_getContext_EGL(win);
 		if (winGlCtx == NULL) continue;
 
