@@ -14552,6 +14552,15 @@ void RGFW_initKeycodesPlatform(void) {
 	_RGFW->keycodes[0x4E] = RGFW_keyPadMinus;
 }
 
+// [UAA] - START - reference count for the shared Objective-C resources
+// The Objective-C class pairs registered below and the NSApplication are
+// process-global objects. A second RGFW_init in the same process reuses the
+// classes that are already registered instead of allocating a duplicate, so
+// several contexts can reference the same class pairs. They may only be
+// disposed once the last context that uses them is deinitialised.
+static i32 RGFW_osxSharedRefs = 0;
+// [UAA] - END
+
 i32 RGFW_initPlatform(const char* className, RGFW_initFlags flags) {
 	RGFW_UNUSED(className); RGFW_UNUSED(flags);
 	_RGFW->tisBundle = (void*)CFBundleGetBundleWithIdentifier(CFSTR("com.apple.HIToolbox"));
@@ -14571,28 +14580,60 @@ i32 RGFW_initPlatform(const char* className, RGFW_initFlags flags) {
 	 * most functions start with v@: because it's `void function(id self, SEL _cmd)
 	*/
 
-	_RGFW->customNSAppDelegateClass = objc_allocateClassPair(objc_getClass("NSObject"), "RGFWNSAppDelegate", 0);
+	// [UAA] - START - reuse an already-registered class pair
+	// objc_allocateClassPair returns NULL when a class with that name
+	// already exists, which happens when RGFW is initialised twice in
+	// one process. Upstream turns that into a clean -1; the fork
+	// instead reuses the existing class so a second init succeeds.
+	Class existingAppDelegate = objc_getClass("RGFWNSAppDelegate");
+	// [UAA] - END
+	_RGFW->customNSAppDelegateClass = (existingAppDelegate != NULL) ? (void*)existingAppDelegate :
+		objc_allocateClassPair(objc_getClass("NSObject"), "RGFWNSAppDelegate", 0);
 	if (_RGFW->customNSAppDelegateClass == NULL) {
 		RGFW_debugCallback(RGFW_typeError, RGFW_errObjcRuntime, "failed to create RGFWNSAppDelegate class");
 		return -1;
 	}
 
+	// [UAA] - START - take a reference on the shared class pairs
+	// The class pairs are registered under fixed names, so they are
+	// process-global. This context now holds a reference to them and the
+	// matching release happens in RGFW_deinitPlatform, which RGFW_init_ptr
+	// also calls when the initialisation fails.
+	RGFW_osxSharedRefs++;
+	// [UAA] - END
+
+	// [UAA] - START - skip the member setup when the class was reused
+	if (existingAppDelegate == NULL) {
+	// [UAA] - END
 	class_addMethod((Class)_RGFW->customNSAppDelegateClass, sel_registerName("applicationDidChangeScreenParameters:"), (IMP)RGFW__osxDidChangeScreenParameters, "v@:@");
 	class_addMethod((Class)_RGFW->customNSAppDelegateClass, sel_registerName("applicationShouldTerminate:"), (IMP)RGFW__osxApplicationShouldTerminate, "@:@");
+	// [UAA] - START - only register a class pair we allocated
 	objc_registerClassPair((Class)_RGFW->customNSAppDelegateClass);
+	}
+	// [UAA] - END
 	_RGFW->customNSAppDelegate = objc_msgSend_id(NSAlloc(_RGFW->customNSAppDelegateClass), sel_registerName("init"));
 
 	objc_msgSend_void_id(_RGFW->NSApp, sel_registerName("setDelegate:"), _RGFW->customNSAppDelegate);
 
 	objc_msgSend_void(_RGFW->NSApp, sel_registerName("finishLaunching"));
 
-	_RGFW->customViewClasses[0] = objc_allocateClassPair(objc_getClass("NSView"), "RGFWCustomView", 0);
-	_RGFW->customViewClasses[1] = objc_allocateClassPair(objc_getClass("NSOpenGLView"), "RGFWOpenGLCustomView", 0);
+	// [UAA] - START - reuse already-registered view class pairs
+	Class existingView = objc_getClass("RGFWCustomView");
+	Class existingGL = objc_getClass("RGFWOpenGLCustomView");
+	// [UAA] - END
+	_RGFW->customViewClasses[0] = (existingView != NULL) ? (void*)existingView :
+		objc_allocateClassPair(objc_getClass("NSView"), "RGFWCustomView", 0);
+	_RGFW->customViewClasses[1] = (existingGL != NULL) ? (void*)existingGL :
+		objc_allocateClassPair(objc_getClass("NSOpenGLView"), "RGFWOpenGLCustomView", 0);
 	for (size_t i = 0; i < 2; i++) {
 		if (_RGFW->customViewClasses[i] == NULL) {
 			RGFW_debugCallback(RGFW_typeError, RGFW_errObjcRuntime, (i == 0) ? "failed to create RGFWCustomView class" : "failed to create RGFWOpenGLCustomView class");
 			return -1;
 		}
+
+		// [UAA] - START - skip the member setup when the class was reused
+		if ((i == 0 && existingView != NULL) || (i == 1 && existingGL != NULL)) continue;
+		// [UAA] - END
 
 		RGFW_ASSERT((sizeof(RGFW_window*) <= 8)); /* some future where pointers are greater than 8 bytes (64-bit) (I'm pretty sure much more will be broken if this is the case) */
 		class_addIvar((Class)_RGFW->customViewClasses[i], "RGFW_window", sizeof(RGFW_window*), (sizeof(RGFW_window*) == 8) ? 3 : 2, "^v");
@@ -14629,12 +14670,19 @@ i32 RGFW_initPlatform(const char* className, RGFW_initFlags flags) {
 		objc_registerClassPair((Class)_RGFW->customViewClasses[i]);
 	}
 
-	_RGFW->customWindowDelegateClass = objc_allocateClassPair(objc_getClass("NSObject"), "RGFWWindowDelegate", 0);
+	// [UAA] - START - reuse an already-registered delegate class pair
+	Class existingDelegate = objc_getClass("RGFWWindowDelegate");
+	// [UAA] - END
+	_RGFW->customWindowDelegateClass = (existingDelegate != NULL) ? (void*)existingDelegate :
+		objc_allocateClassPair(objc_getClass("NSObject"), "RGFWWindowDelegate", 0);
 	if (_RGFW->customWindowDelegateClass == NULL) {
 		RGFW_debugCallback(RGFW_typeError, RGFW_errObjcRuntime, "failed to create RGFWWindowDelegate class");
 		return -1;
 	}
 
+	// [UAA] - START - skip the member setup when the class was reused
+	if (existingDelegate == NULL) {
+	// [UAA] - END
 	class_addIvar((Class)_RGFW->customWindowDelegateClass, "RGFW_window", sizeof(RGFW_window*), (sizeof(RGFW_window*) == 8) ? 3 : 2, "^v");
 	class_addMethod((Class)_RGFW->customWindowDelegateClass, sel_registerName("windowDidResize:"), (IMP)RGFW__osxDidWindowResize, "v@:@");
 	class_addMethod((Class)_RGFW->customWindowDelegateClass, sel_registerName("windowDidMove:"), (IMP) RGFW__osxWindowMove, "v@:@");
@@ -14643,17 +14691,30 @@ i32 RGFW_initPlatform(const char* className, RGFW_initFlags flags) {
 	class_addMethod((Class)_RGFW->customWindowDelegateClass, sel_registerName("windowDidBecomeKey:"), (IMP) RGFW__osxWindowBecameKey, "v@:@");
 	class_addMethod((Class)_RGFW->customWindowDelegateClass, sel_registerName("windowDidResignKey:"), (IMP) RGFW__osxWindowResignKey, "v@:@");
 	class_addMethod((Class)_RGFW->customWindowDelegateClass, sel_registerName("windowShouldClose:"), (IMP)(void*)RGFW_osxWindowShouldClose, "B@:@");
+	// [UAA] - START - only register a class pair we allocated
 	objc_registerClassPair((Class)_RGFW->customWindowDelegateClass);
+	}
+	// [UAA] - END
 
-	_RGFW->customWindowClass = objc_allocateClassPair(objc_getClass("NSWindow"), "RGFWWindowClass", 0);
+	// [UAA] - START - reuse an already-registered window class pair
+	Class existingWindowClass = objc_getClass("RGFWWindowClass");
+	// [UAA] - END
+	_RGFW->customWindowClass = (existingWindowClass != NULL) ? (void*)existingWindowClass :
+		objc_allocateClassPair(objc_getClass("NSWindow"), "RGFWWindowClass", 0);
 	if (_RGFW->customWindowClass== NULL) {
 		RGFW_debugCallback(RGFW_typeError, RGFW_errObjcRuntime, "failed to create RGFWWindowClass class");
 		return -1;
 	}
 
+	// [UAA] - START - skip the member setup when the class was reused
+	if (existingWindowClass == NULL) {
+	// [UAA] - END
 	class_addMethod((Class)_RGFW->customWindowClass, sel_registerName("canBecomeKeyWindow"), (IMP)RGFW__osxCanBecomeKeyWindow, "B@:");
 	class_addMethod((Class)_RGFW->customWindowClass, sel_registerName("canBecomeMainWindow"),(IMP)RGFW__osxCanBecomeMainWindow, "B@:");
+	// [UAA] - START - only register a class pair we allocated
 	objc_registerClassPair((Class)_RGFW->customWindowClass);
+	}
+	// [UAA] - END
 
 	return 0;
 }
@@ -15747,12 +15808,35 @@ void RGFW_window_swapInterval_OpenGL(RGFW_window* win, i32 swapInterval) {
 #endif
 
 void RGFW_deinitPlatform(void) {
+	// [UAA] - START - release this context's reference to the shared classes
+	// The Objective-C class pairs registered below and the NSApplication are
+	// process-global objects, so several RGFW contexts can reference the same
+	// class pairs. They may only be disposed once the last context that uses
+	// them is gone. The customNSAppDelegate instance is per-context, so it is
+	// always released here.
+	i32 osxLastRef = 0;
+	if (RGFW_osxSharedRefs > 0) {
+		RGFW_osxSharedRefs--;
+		osxLastRef = (RGFW_osxSharedRefs == 0);
+	}
+	// [UAA] - END
+
 	if (_RGFW->NSApp) {
-		objc_msgSend_void_id(_RGFW->NSApp, sel_registerName("setDelegate:"), NULL);
+		// [UAA] - START - do not clear a delegate that another context owns
+		// The NSApplication is shared, so its delegate may already belong to
+		// a different context that is still alive.
+		id currentDelegate = objc_msgSend_id(_RGFW->NSApp, sel_registerName("delegate"));
+		if (currentDelegate == (id)_RGFW->customNSAppDelegate) {
+			objc_msgSend_void_id(_RGFW->NSApp, sel_registerName("setDelegate:"), NULL);
+		}
+		// [UAA] - END
 		NSRelease(_RGFW->customNSAppDelegate);
 		_RGFW->customNSAppDelegate = NULL;
 
-		objc_msgSend_void_id(_RGFW->NSApp, sel_registerName("stop:"), NULL);
+		// [UAA] - START - only the last context stops the shared application
+		if (osxLastRef)
+			objc_msgSend_void_id(_RGFW->NSApp, sel_registerName("stop:"), NULL);
+		// [UAA] - END
 		_RGFW->NSApp = NULL;
 	}
 
@@ -15761,9 +15845,14 @@ void RGFW_deinitPlatform(void) {
 
 	_RGFW->customNSAppDelegate = NULL;
 
+	// [UAA] - START - only the last context disposes the shared class pairs
+	// Disposing a class pair that another context still holds would leave
+	// that context with a dangling class pointer.
+	if (osxLastRef) {
+	// [UAA] - END
 	if (_RGFW->customViewClasses[0] != NULL)
 		objc_disposeClassPair((Class)_RGFW->customViewClasses[0]);
-	if (_RGFW->customViewClasses[0] != NULL)
+	if (_RGFW->customViewClasses[1] != NULL)
 		objc_disposeClassPair((Class)_RGFW->customViewClasses[1]);
 
 	if (_RGFW->customWindowDelegateClass)
@@ -15780,6 +15869,8 @@ void RGFW_deinitPlatform(void) {
 
 	if (_RGFW->customNSAppDelegateClass)
 		objc_disposeClassPair((Class)_RGFW->customNSAppDelegateClass);
+	}
+	// [UAA] - END
 }
 
 void RGFW_window_closePlatform(RGFW_window* win) {
